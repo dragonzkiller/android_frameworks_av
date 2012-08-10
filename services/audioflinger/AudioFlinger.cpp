@@ -910,7 +910,21 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
                 gScreenState = ((gScreenState & ~1) + 2) | isOff;
             }
         }
+
+#ifdef MOTO_DOCK_HACK
+        String8 key = String8("DockState");
+        int device;
+        if (NO_ERROR != param.getInt(key, device)) {
+            ALOGD("setParameters(): DockState not present");
+            return final_result;
+        } else {
+            /* We also need to pass routing=int */
+            ioHandle = 1;
+            ALOGD("setParameters(): DockState %d trick done!", device);
+        }
+#else
         return final_result;
+#endif
     }
 
     // hold a strong ref on thread in case closeOutput() or closeInput() is called
