@@ -73,7 +73,11 @@ static const char vSrcNormal[] =
 static const char fSrcNormal[] =
     "#extension GL_OES_EGL_image_external : require\n"
     "precision mediump float;\n"
+#ifdef MISSING_EGL_EXTERNAL_IMAGE
+    "uniform sampler2D texSampler;\n"
+#else
     "uniform samplerExternalOES texSampler;\n"
+#endif
     "varying vec2 texCoords;\n"
     "void main() {\n"
     "  gl_FragColor = texture2D(texSampler, texCoords);\n"
@@ -82,7 +86,11 @@ static const char fSrcNormal[] =
 static const char fSrcSepia[] =
     "#extension GL_OES_EGL_image_external : require\n"
     "precision mediump float;\n"
+#ifdef MISSING_EGL_EXTERNAL_IMAGE
+    "uniform sampler2D texSampler;\n"
+#else
     "uniform samplerExternalOES texSampler;\n"
+#endif
     "varying vec2 texCoords;\n"
     RGB2YUV_MATRIX
     YUV2RGB_MATRIX
@@ -96,7 +104,11 @@ static const char fSrcSepia[] =
 static const char fSrcNegative[] =
     "#extension GL_OES_EGL_image_external : require\n"
     "precision mediump float;\n"
+#ifdef MISSING_EGL_EXTERNAL_IMAGE
+    "uniform sampler2D texSampler;\n"
+#else
     "uniform samplerExternalOES texSampler;\n"
+#endif
     "varying vec2 texCoords;\n"
     RGB2YUV_MATRIX
     YUV2RGB_MATRIX
@@ -114,7 +126,11 @@ static const char fSrcNegative[] =
 static const char fSrcGradient[] =
     "#extension GL_OES_EGL_image_external : require\n"
     "precision mediump float;\n"
+#ifdef MISSING_EGL_EXTERNAL_IMAGE
+    "uniform sampler2D texSampler;\n"
+#else
     "uniform samplerExternalOES texSampler;\n"
+#endif
     "varying vec2 texCoords;\n"
     "varying float topDown;\n"
     RGB2YUV_MATRIX
