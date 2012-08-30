@@ -1061,7 +1061,6 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
         }
     }
 #endif
-    }
 
     // hold a strong ref on thread in case closeOutput() or closeInput() is called
     // and the thread is exited once the lock is released
