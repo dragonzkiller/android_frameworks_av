@@ -1034,6 +1034,20 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
                 gScreenState = ((gScreenState & ~1) + 2) | isOff;
             }
         }
+        return final_result;
+    }
+
+#ifdef QCOM_HARDWARE
+    AudioSessionDescriptor *desc = NULL;
+    if (!mDirectAudioTracks.isEmpty()) {
+        desc = mDirectAudioTracks.valueFor(ioHandle);
+        if (desc != NULL) {
+            ALOGV("setParameters for mAudioTracks size %d desc %p",mDirectAudioTracks.size(),desc);
+            desc->stream->common.set_parameters(&desc->stream->common, keyValuePairs.string());
+            return NO_ERROR;
+        }
+    }
+#endif
 
 #ifdef MOTO_DOCK_HACK
         String8 key = String8("DockState");
@@ -1050,18 +1064,6 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
         return final_result;
 #endif
     }
-
-#ifdef QCOM_HARDWARE
-    AudioSessionDescriptor *desc = NULL;
-    if (!mDirectAudioTracks.isEmpty()) {
-        desc = mDirectAudioTracks.valueFor(ioHandle);
-        if (desc != NULL) {
-            ALOGV("setParameters for mAudioTracks size %d desc %p",mDirectAudioTracks.size(),desc);
-            desc->stream->common.set_parameters(&desc->stream->common, keyValuePairs.string());
-            return NO_ERROR;
-        }
-    }
-#endif
 
     // hold a strong ref on thread in case closeOutput() or closeInput() is called
     // and the thread is exited once the lock is released
@@ -6573,11 +6575,11 @@ bool AudioFlinger::RecordThread::threadLoop()
                                 ((int)mChannelCount == mReqChannelCount ||
 #ifdef QCOM_HARDWARE
                                   ((mFormat != AUDIO_FORMAT_PCM_16_BIT) &&
-                                  ((audio_source_t)mInputSource != AUDIO_SOURCE_VOICE_COMMUNICATION)))
+                                  ((audio_source_t)mInputSource != AUDIO_SOURCE_VOICE_COMMUNICATION))))
 #else
-                                  ((int)mChannelCount == mReqChannelCount || mFormat != AUDIO_FORMAT_PCM_16_BIT)
+                                  ((int)mChannelCount == mReqChannelCount || mFormat != AUDIO_FORMAT_PCM_16_BIT)))
 #endif
-                                        ) {
+                                        {
                                                 mBytesRead = mInput->stream->read(mInput->stream, buffer.raw, mInputBytes);
 #ifdef QCOM_HARDWARE
                                 if( mBytesRead >= 0 ){
