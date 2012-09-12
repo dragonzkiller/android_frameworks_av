@@ -285,7 +285,11 @@ static VideoFrame *extractVideoFrameWithCodecFlags(
                 width, height,
                 crop_left, crop_top, crop_right, crop_bottom,
                 frame->mData,
+#ifdef QCOM_HARDWARE
+                frame_width_rounded,
+#else
                 frame->mWidth,
+#endif
                 frame->mHeight,
                 0, 0, frame->mWidth - 1, frame->mHeight - 1);
     } else {
@@ -626,6 +630,32 @@ void StagefrightMetadataRetriever::parseMetaData() {
                 mMetaData.add(
                         METADATA_KEY_MIMETYPE, String8("audio/x-matroska"));
             }
+        }
+
+        // Allow Audio only ASF clips to be considered as audio clips
+        if (!strcasecmp(fileMIME, "video/x-ms-asf") ||
+                !strcasecmp(fileMIME, "audio/x-ms-wma")) {
+            sp<MetaData> trackMeta = mExtractor->getTrackMetaData(0);
+            const char *trackMIME;
+            CHECK(trackMeta->findCString(kKeyMIMEType, &trackMIME));
+
+            if (!strcasecmp("audio/x-ms-wma", trackMIME)) {
+                mMetaData.add(
+                        METADATA_KEY_MIMETYPE, String8("audio/x-ms-wma"));
+            }
+        }
+        // Allow Audio only 3gp clips to be considered as audio clips
+        if (!strcasecmp(fileMIME, "video/3gpp") ||
+                !strcasecmp(fileMIME, "audio/mp4a-latm")) {
+            sp<MetaData> trackMeta = mExtractor->getTrackMetaData(0);
+            const char *trackMIME;
+            CHECK(trackMeta->findCString(kKeyMIMEType, &trackMIME));
+
+            if (!strcasecmp("audio/mp4a-latm", trackMIME)) {
+                mMetaData.add(
+                        METADATA_KEY_MIMETYPE, String8("audio/aac"));
+            }
+
         }
     }
 

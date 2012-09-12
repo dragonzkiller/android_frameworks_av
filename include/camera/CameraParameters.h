@@ -580,9 +580,12 @@ public:
     static const char KEY_VIDEO_SNAPSHOT_SUPPORTED[];
     static const char KEY_FULL_VIDEO_SNAP_SUPPORTED[];
 
-#ifdef QCOM_HARDWARE
-    static const char KEY_ISO_MODE[];
+#if defined(QCOM_HARDWARE) || defined(EXYNOS4X12_ENHANCEMENTS)
     static const char KEY_SUPPORTED_ISO_MODES[];
+    static const char KEY_ISO_MODE[];
+#endif
+
+#ifdef QCOM_HARDWARE
     static const char KEY_LENSSHADE[] ;
     static const char KEY_SUPPORTED_LENSSHADE_MODES[] ;
 
@@ -734,6 +737,7 @@ public:
     static const char SCENE_MODE_BACKLIGHT[];
     static const char SCENE_MODE_FLOWERS[];
     static const char SCENE_MODE_AR[];
+    static const char SCENE_MODE_OFF[];
 #endif
     // Applications are looking for a barcode. Camera driver will be optimized
     // for barcode reading.
@@ -847,19 +851,13 @@ public:
 
     static const char KEY_SHARPNESS[];
     static const char KEY_MAX_SHARPNESS[];
-#ifdef QCOM_HARDWARE
     static const char KEY_MIN_SHARPNESS[];
-#endif
     static const char KEY_CONTRAST[];
     static const char KEY_MAX_CONTRAST[];
-#ifdef QCOM_HARDWARE
     static const char KEY_MIN_CONTRAST[];
-#endif
     static const char KEY_SATURATION[];
     static const char KEY_MAX_SATURATION[];
-#ifdef QCOM_HARDWARE
     static const char KEY_MIN_SATURATION[];
-#endif
 
     static const char KEY_HISTOGRAM[] ;
     static const char KEY_SUPPORTED_HISTOGRAM_MODES[] ;
@@ -926,6 +924,7 @@ public:
     int getOrientation() const;
     void setOrientation(int orientation);
     void setPreviewFpsRange(int minFPS,int maxFPS);
+    void setPostviewSize(int x, int y);
     void getSupportedHfrSizes(Vector<Size> &sizes) const;
 #endif
 

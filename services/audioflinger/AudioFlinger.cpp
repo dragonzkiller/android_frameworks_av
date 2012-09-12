@@ -245,6 +245,9 @@ AudioFlinger::AudioFlinger()
 void AudioFlinger::onFirstRef()
 {
     int rc = 0;
+#ifdef QCOM_HARDWARE
+    mA2DPHandle = -1;
+#endif
 
     Mutex::Autolock _l(mLock);
 
@@ -722,6 +725,9 @@ status_t AudioFlinger::setMasterVolume(float value)
 
     float swmv = value;
 
+#ifdef QCOM_HARDWARE
+    mA2DPHandle = -1;
+#endif
     Mutex::Autolock _l(mLock);
 
     // when hw supports master volume, don't scale in sw mixer
@@ -1034,6 +1040,7 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
                 gScreenState = ((gScreenState & ~1) + 2) | isOff;
             }
         }
+
 #ifdef MOTO_DOCK_HACK
         String8 key = String8("DockState");
         int device;
@@ -1066,7 +1073,18 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
     // and the thread is exited once the lock is released
     sp<ThreadBase> thread;
     {
+#ifdef QCOM_HARDWARE
+        // Avoid autolock to avoid deadlock for sound record - lpa concurrency.
+        // Rapid button press will cause next clip playback. If next clip is lpa
+        // clip, opening lpa clip triggers set parameter. The set parameter would
+        // acquire flinger lock and wait for setParams completion. The wait can only
+        // be signalled from checkForNewParameters_l() in threadloop but the record
+        // thread loop will be blocked on processConfigEvents() on audio flinger lock
+        // resulting in deadlock and record failure.
+        mLock.lock();
+#else
         Mutex::Autolock _l(mLock);
+#endif
         thread = checkPlaybackThread_l(ioHandle);
         if (thread == NULL) {
             thread = checkRecordThread_l(ioHandle);
@@ -1074,13 +1092,28 @@ status_t AudioFlinger::setParameters(audio_io_handle_t ioHandle, const String8& 
             // indicate output device change to all input threads for pre processing
             AudioParameter param = AudioParameter(keyValuePairs);
             int value;
+#ifdef QCOM_HARDWARE
+            DefaultKeyedVector< int, sp<RecordThread> >    recordThreads = mRecordThreads;
+            mLock.unlock();
+#endif
             if ((param.getInt(String8(AudioParameter::keyRouting), value) == NO_ERROR) &&
                     (value != 0)) {
+#ifdef QCOM_HARDWARE
+                for (size_t i = 0; i < recordThreads.size(); i++) {
+                    recordThreads.valueAt(i)->setParameters(keyValuePairs);
+#else
                 for (size_t i = 0; i < mRecordThreads.size(); i++) {
                     mRecordThreads.valueAt(i)->setParameters(keyValuePairs);
+#endif
                 }
             }
+#ifdef QCOM_HARDWARE
+            mLock.lock();
+#endif
         }
+#ifdef QCOM_HARDWARE
+        mLock.unlock();
+#endif
     }
     if (thread != 0) {
         return thread->setParameters(keyValuePairs);
@@ -1224,6 +1257,16 @@ void AudioFlinger::registerClient(const sp<IAudioFlingerClient>& client)
 
     Mutex::Autolock _l(mLock);
 
+#ifdef QCOM_HARDWARE
+    sp<IBinder> binder = client->asBinder();
+    if (mNotificationClients.indexOfKey(binder) < 0) {
+        sp<NotificationClient> notificationClient = new NotificationClient(this,
+                                                                            client,
+                                                                            binder);
+        ALOGV("registerClient() client %p, binder %d", notificationClient.get(), binder.get());
+
+        mNotificationClients.add(binder, notificationClient);
+#else
     pid_t pid = IPCThreadState::self()->getCallingPid();
     if (mNotificationClients.indexOfKey(pid) < 0) {
         sp<NotificationClient> notificationClient = new NotificationClient(this,
@@ -1232,6 +1275,7 @@ void AudioFlinger::registerClient(const sp<IAudioFlingerClient>& client)
         ALOGV("registerClient() client %p, pid %d", notificationClient.get(), pid);
 
         mNotificationClients.add(pid, notificationClient);
+#endif
 
         sp<IBinder> binder = client->asBinder();
         binder->linkToDeath(notificationClient);
@@ -1246,14 +1290,46 @@ void AudioFlinger::registerClient(const sp<IAudioFlingerClient>& client)
             mRecordThreads.valueAt(i)->sendConfigEvent(AudioSystem::INPUT_OPENED);
         }
     }
+#ifdef QCOM_HARDWARE
+    // Send the notification to the client only once.
+    if (mA2DPHandle != -1) {
+        ALOGV("A2DP active. Notifying the registered client");
+        client->ioConfigChanged(AudioSystem::A2DP_OUTPUT_STATE, mA2DPHandle, &mA2DPHandle);
+    }
+#endif
 }
 
+#ifdef QCOM_HARDWARE
+status_t AudioFlinger::deregisterClient(const sp<IAudioFlingerClient>& client)
+#else
 void AudioFlinger::removeNotificationClient(pid_t pid)
+#endif
+{
+#ifdef QCOM_HARDWARE
+    ALOGV("deregisterClient() %p, tid %d, calling tid %d", client.get(), gettid(), IPCThreadState::self()->getCallingPid());
+#endif
+    Mutex::Autolock _l(mLock);
+
+#ifndef QCOM_HARDWARE
+    mNotificationClients.removeItem(pid);
+#else
+    sp<IBinder> binder = client->asBinder();
+    int index = mNotificationClients.indexOfKey(binder);
+    if (index >= 0) {
+        mNotificationClients.removeItemsAt(index);
+        return true;
+    }
+    return false;
+}
+
+void AudioFlinger::removeNotificationClient(sp<IBinder> binder)
 {
     Mutex::Autolock _l(mLock);
 
-    mNotificationClients.removeItem(pid);
+    mNotificationClients.removeItem(binder);
 
+    int pid = IPCThreadState::self()->getCallingPid();
+#endif
     ALOGV("%d died, releasing its sessions", pid);
     size_t num = mAudioSessionRefs.size();
     bool removed = false;
@@ -1859,70 +1935,6 @@ sp<AudioFlinger::PlaybackThread::Track> AudioFlinger::PlaybackThread::createTrac
 
     bool isTimed = (flags & IAudioFlinger::TRACK_TIMED) != 0;
 
-    // client expresses a preference for FAST, but we get the final say
-    if (flags & IAudioFlinger::TRACK_FAST) {
-      if (
-            // not timed
-            (!isTimed) &&
-            // either of these use cases:
-            (
-              // use case 1: shared buffer with any frame count
-              (
-                (sharedBuffer != 0)
-              ) ||
-              // use case 2: callback handler and frame count is default or at least as large as HAL
-              (
-                (tid != -1) &&
-                ((frameCount == 0) ||
-                (frameCount >= (int) (mFrameCount * 2))) // * 2 is due to SRC jitter, see below
-              )
-            ) &&
-            // PCM data
-            audio_is_linear_pcm(format) &&
-            // mono or stereo
-            ( (channelMask == AUDIO_CHANNEL_OUT_MONO) ||
-              (channelMask == AUDIO_CHANNEL_OUT_STEREO) ) &&
-#ifndef FAST_TRACKS_AT_NON_NATIVE_SAMPLE_RATE
-            // hardware sample rate
-            (sampleRate == mSampleRate) &&
-#endif
-            // normal mixer has an associated fast mixer
-            hasFastMixer() &&
-            // there are sufficient fast track slots available
-            (mFastTrackAvailMask != 0)
-            // FIXME test that MixerThread for this fast track has a capable output HAL
-            // FIXME add a permission test also?
-        ) {
-        // if frameCount not specified, then it defaults to fast mixer (HAL) frame count
-        if (frameCount == 0) {
-            frameCount = mFrameCount * 2;   // FIXME * 2 is due to SRC jitter, should be computed
-        }
-        ALOGV("AUDIO_OUTPUT_FLAG_FAST accepted: frameCount=%d mFrameCount=%d",
-                frameCount, mFrameCount);
-      } else {
-        ALOGV("AUDIO_OUTPUT_FLAG_FAST denied: isTimed=%d sharedBuffer=%p frameCount=%d "
-                "mFrameCount=%d format=%d isLinear=%d channelMask=%d sampleRate=%d mSampleRate=%d "
-                "hasFastMixer=%d tid=%d fastTrackAvailMask=%#x",
-                isTimed, sharedBuffer.get(), frameCount, mFrameCount, format,
-                audio_is_linear_pcm(format),
-                channelMask, sampleRate, mSampleRate, hasFastMixer(), tid, mFastTrackAvailMask);
-        flags &= ~IAudioFlinger::TRACK_FAST;
-        // For compatibility with AudioTrack calculation, buffer depth is forced
-        // to be at least 2 x the normal mixer frame count and cover audio hardware latency.
-        // This is probably too conservative, but legacy application code may depend on it.
-        // If you change this calculation, also review the start threshold which is related.
-        uint32_t latencyMs = mOutput->stream->get_latency(mOutput->stream);
-        uint32_t minBufCount = latencyMs / ((1000 * mNormalFrameCount) / mSampleRate);
-        if (minBufCount < 2) {
-            minBufCount = 2;
-        }
-        int minFrameCount = mNormalFrameCount * minBufCount;
-        if (frameCount < minFrameCount) {
-            frameCount = minFrameCount;
-        }
-      }
-    }
-
     if (mType == DIRECT) {
         if (((format & AUDIO_FORMAT_MAIN_MASK) == AUDIO_FORMAT_PCM)
 #ifdef QCOM_HARDWARE
@@ -1958,6 +1970,70 @@ sp<AudioFlinger::PlaybackThread::Track> AudioFlinger::PlaybackThread::createTrac
 
     { // scope for mLock
         Mutex::Autolock _l(mLock);
+
+        // client expresses a preference for FAST, but we get the final say
+        if (flags & IAudioFlinger::TRACK_FAST) {
+          if (
+                // not timed
+                (!isTimed) &&
+                // either of these use cases:
+                (
+                  // use case 1: shared buffer with any frame count
+                  (
+                    (sharedBuffer != 0)
+                  ) ||
+                  // use case 2: callback handler and frame count is default or at least as large as HAL
+                  (
+                    (tid != -1) &&
+                    ((frameCount == 0) ||
+                    (frameCount >= (int) (mFrameCount * 2))) // * 2 is due to SRC jitter, see below
+                  )
+                ) &&
+                // PCM data
+                audio_is_linear_pcm(format) &&
+                // mono or stereo
+                ( (channelMask == AUDIO_CHANNEL_OUT_MONO) ||
+                  (channelMask == AUDIO_CHANNEL_OUT_STEREO) ) &&
+#ifndef FAST_TRACKS_AT_NON_NATIVE_SAMPLE_RATE
+                // hardware sample rate
+                (sampleRate == mSampleRate) &&
+#endif
+                // normal mixer has an associated fast mixer
+                hasFastMixer() &&
+                // there are sufficient fast track slots available
+                (mFastTrackAvailMask != 0)
+                // FIXME test that MixerThread for this fast track has a capable output HAL
+                // FIXME add a permission test also?
+            ) {
+            // if frameCount not specified, then it defaults to fast mixer (HAL) frame count
+            if (frameCount == 0) {
+                frameCount = mFrameCount * 2;   // FIXME * 2 is due to SRC jitter, should be computed
+            }
+            ALOGV("AUDIO_OUTPUT_FLAG_FAST accepted: frameCount=%d mFrameCount=%d",
+                    frameCount, mFrameCount);
+          } else {
+            ALOGV("AUDIO_OUTPUT_FLAG_FAST denied: isTimed=%d sharedBuffer=%p frameCount=%d "
+                    "mFrameCount=%d format=%d isLinear=%d channelMask=%d sampleRate=%d mSampleRate=%d "
+                    "hasFastMixer=%d tid=%d fastTrackAvailMask=%#x",
+                    isTimed, sharedBuffer.get(), frameCount, mFrameCount, format,
+                    audio_is_linear_pcm(format),
+                    channelMask, sampleRate, mSampleRate, hasFastMixer(), tid, mFastTrackAvailMask);
+            flags &= ~IAudioFlinger::TRACK_FAST;
+            // For compatibility with AudioTrack calculation, buffer depth is forced
+            // to be at least 2 x the normal mixer frame count and cover audio hardware latency.
+            // This is probably too conservative, but legacy application code may depend on it.
+            // If you change this calculation, also review the start threshold which is related.
+            uint32_t latencyMs = mOutput->stream->get_latency(mOutput->stream);
+            uint32_t minBufCount = latencyMs / ((1000 * mNormalFrameCount) / mSampleRate);
+            if (minBufCount < 2) {
+                minBufCount = 2;
+            }
+            int minFrameCount = mNormalFrameCount * minBufCount;
+            if (frameCount < minFrameCount) {
+                frameCount = minFrameCount;
+            }
+          }
+        }
 
         // all tracks in same audio session must share the same routing strategy otherwise
         // conflicts will happen when tracks are moved from one output to another by audio policy
@@ -6073,8 +6149,13 @@ void AudioFlinger::Client::releaseTimedTrack()
 
 AudioFlinger::NotificationClient::NotificationClient(const sp<AudioFlinger>& audioFlinger,
                                                      const sp<IAudioFlingerClient>& client,
+#ifdef QCOM_HARDWARE
+                                                     sp<IBinder> binder)
+    : mAudioFlinger(audioFlinger), mBinder(binder), mAudioFlingerClient(client)
+#else
                                                      pid_t pid)
     : mAudioFlinger(audioFlinger), mPid(pid), mAudioFlingerClient(client)
+#endif
 {
 }
 
@@ -6085,7 +6166,11 @@ AudioFlinger::NotificationClient::~NotificationClient()
 void AudioFlinger::NotificationClient::binderDied(const wp<IBinder>& who)
 {
     sp<NotificationClient> keep(this);
+#ifdef QCOM_HARDWARE
+    mAudioFlinger->removeNotificationClient(mBinder);
+#else
     mAudioFlinger->removeNotificationClient(mPid);
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -6574,7 +6659,7 @@ bool AudioFlinger::RecordThread::threadLoop()
                                   ((mFormat != AUDIO_FORMAT_PCM_16_BIT) &&
                                   ((audio_source_t)mInputSource != AUDIO_SOURCE_VOICE_COMMUNICATION))))
 #else
-                                  ((int)mChannelCount == mReqChannelCount || mFormat != AUDIO_FORMAT_PCM_16_BIT)))
+                                  mFormat != AUDIO_FORMAT_PCM_16_BIT))
 #endif
                                         {
                                                 mBytesRead = mInput->stream->read(mInput->stream, buffer.raw, mInputBytes);
@@ -7357,13 +7442,24 @@ audio_io_handle_t AudioFlinger::openOutput(audio_module_handle_t module,
 #endif
             mPlaybackThreads.add(id, thread);
 
+#ifdef QCOM_HARDWARE
+        // if the device is a A2DP, then this is an A2DP Output
+        if ( true == audio_is_a2dp_device((audio_devices_t) *pDevices) )
+        {
+            mA2DPHandle = id;
+            ALOGV("A2DP device activated. The handle is set to %d", mA2DPHandle);
+        }
+#endif
+
+
         if (pSamplingRate != NULL) *pSamplingRate = config.sample_rate;
         if (pFormat != NULL) *pFormat = config.format;
         if (pChannelMask != NULL) *pChannelMask = config.channel_mask;
 #ifdef QCOM_HARDWARE
         if (thread != NULL) {
-            if (pLatencyMs != NULL) *pLatencyMs = thread->latency();
 #endif
+            if (pLatencyMs != NULL) *pLatencyMs = thread->latency();
+
             // notify client processes of the new output creation
             thread->audioConfigChanged_l(AudioSystem::OUTPUT_OPENED);
 #ifdef QCOM_HARDWARE
@@ -7483,6 +7579,14 @@ status_t AudioFlinger::closeOutput(audio_io_handle_t output)
         }
         audioConfigChanged_l(AudioSystem::OUTPUT_CLOSED, output, NULL);
         mPlaybackThreads.removeItem(output);
+#ifdef QCOM_HARDWARE
+        if (mA2DPHandle == output)
+        {
+            mA2DPHandle = -1;
+            ALOGV("A2DP OutputClosed Notifying Client");
+            audioConfigChanged_l(AudioSystem::A2DP_OUTPUT_STATE, mA2DPHandle, &mA2DPHandle);
+        }
+#endif
     }
     thread->exit();
     // The thread entity (active unit of execution) is no longer running here,
@@ -7679,6 +7783,13 @@ status_t AudioFlinger::setStreamOutput(audio_stream_type_t stream, audio_io_hand
             srcThread->invalidateTracks(stream);
         }
     }
+
+#ifdef QCOM_HARDWARE
+    if ( mA2DPHandle == output ) {
+        ALOGV("A2DP Activated and hence notifying the client");
+        audioConfigChanged_l(AudioSystem::A2DP_OUTPUT_STATE, mA2DPHandle, &output);
+    }
+#endif
 
     return NO_ERROR;
 }
