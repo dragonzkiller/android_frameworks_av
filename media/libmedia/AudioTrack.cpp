@@ -367,6 +367,7 @@ status_t AudioTrack::set(
                                                         &status);
         if(status != NO_ERROR) {
             ALOGE("createDirectTrack returned with status %d", status);
+            return status;
         }
         mAudioTrack = NULL;
         mSharedBuffer = NULL;
@@ -1265,9 +1266,6 @@ ssize_t AudioTrack::write(const void* buffer, size_t userSize)
 {
 #ifdef QCOM_HARDWARE
     if (mDirectTrack != NULL) {
-        if (!mActive) {
-            mActive = true;
-        }
         mDirectTrack->write(buffer,userSize);
         return userSize;
     }
